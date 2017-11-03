@@ -1,0 +1,234 @@
+```{r setup, echo=FALSE, include=FALSE}
+library(papaja)
+library(knitr)
+knitr::opts_chunk$set(echo=FALSE, fig.path='figure/', cache=TRUE, autodep=TRUE, cache.comments=FALSE, message=FALSE, warning=FALSE)
+
+# Required packages:
+library(twitteR)
+library(plyr)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+library(SnowballC)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+#library(igraph)
+
+# Setting colors
+pal1 <- brewer.pal(8, "Dark2")
+pal2 <- brewer.pal(9, "Blues")[5:9]
+```
+
+```{r preFunction, include=FALSE}
+# Predefine required functions below.
+
+## 1. Cleaning Corpus Function:
+
+cleanCorpus <- function(x=myCorpus) {
+x <- tm_map(x, content_transformer(tolower))
+
+removeComment <- function(x) gsub("#[[:alnum:]]*", "", x)
+x <- tm_map(x, removeComment)
+
+removeAt <- function(x) gsub("@[[:alnum:]]*", "", x)
+x <- tm_map(x, removeAt)
+
+x <- tm_map(x, stripWhitespace)
+x <- tm_map(x, removePunctuation)
+x <- tm_map(x, removeNumbers)
+
+#Add exception word list
+except <- readLines("exception.txt")
+cnt_txt <- length(except)
+myStopwords <- c(stopwords('english'))
+for(i in 1:cnt_txt) {
+	myStopwords <- append(myStopwords, except[i])
+}
+
+# remove stopwords from corpus
+x <- tm_map(x, removeWords, myStopwords)
+
+# remove URLs
+ removeWWW <- function(x) gsub("www[[:alnum:]]*", "", x)
+x <- tm_map(x, removeWWW)
+
+ removeURL <- function(x) gsub("http[[:alnum:]]*", "", x)
+x <- tm_map(x, removeURL)
+return(x)
+}
+
+# 2. Define modified stemCompletion function
+stemCompletion2 <- function(x, dict=dictionary) {
+  PlainTextDocument(stripWhitespace(paste(stemCompletion(unlist(strsplit(as.character(x), " ")), dictionary=dict, type="shortest"),sep="", collapse=" ")))
+}
+
+# 3. replacement function for Learning Sciences
+replaceLS <- function(x) {
+rpLS <- as.data.frame(read.csv("replacing/LS.csv", row.names=NULL), stringsAsFactors=F)
+
+    xCopy <- x
+    for(i in 1:nrow(rpLS)) {
+        xCopy <- gsub(toString(rpLS[i, 1]), toString(rpLS[i, 2]), xCopy)
+    }
+    return(x <- xCopy)
+}
+
+# 4. Correlation analysis function
+corAnalysis <- function(term, cor) {
+df <- as.data.frame(findAssocs(tdm2, terms=term, corlimit=cor)[[term]], stringsAsFactors=F)
+df$new <- rownames(df)
+rownames(df) <- 1:nrow(df)
+df <- df[,c(2,1)]
+colnames(df) <- c("word", "correlation")
+write.csv(df, "output/CSV/Correlation.csv")
+
+top20_cor <- df %>%
+  arrange(desc(correlation)) %>%
+  head(20)
+
+# Network graph
+pdf("output/NetWork/Correlation.pdf")
+top20_cor <- rename(top20_cor, terms=word, probs=correlation)
+g <- graph.data.frame(top20_cor, directed = F)
+plot(g) 
+dev.off()	
+
+ # word cloud
+#pdf("output/WordCloud/Correlation.pdf")
+ set.seed(375) # to make it reproducible
+ wordcloud(
+words=df$word,
+freq=df$correlation,
+scale = c(6, 0.2),
+min.freq=10,
+max.words=200,
+rot.per = .1,
+random.order=F,
+colors = pal2
+)
+#dev.off()
+}
+
+# 5. Sentimental analysis functions:
+
+score.sentiment = function(sentences, pos.words, neg.words)
+{
+   # Parameters
+   # sentences: vector of text to score
+   # pos.words: vector of words of postive sentiment
+   # neg.words: vector of words of negative sentiment  
+   # create simple array of scores with laply
+
+   scores = laply(sentences, 
+   function(sentence, pos.words, neg.words)
+   {
+      # remove punctuation
+      sentence = gsub("[[:punct:]]", "", sentence)
+      # remove control characters
+      sentence = gsub("[[:cntrl:]]", "", sentence)
+      # remove digits?
+      sentence = gsub('\\d+', '', sentence)
+
+      # define error handling function when trying tolower
+      tryTolower = function(x)
+      {
+         # create missing value
+         y = NA
+         # tryCatch error
+         try_error = tryCatch(tolower(x), error=function(e) e)
+         # if not an error
+         if (!inherits(try_error, "error"))
+         y = tolower(x)
+         # result
+         return(y)
+      }
+
+      # use tryTolower with sapply 
+      sentence = sapply(sentence, tryTolower)
+      # split sentence into words with str_split (stringr package)
+      word.list = str_split(sentence, "\\s+")
+      words = unlist(word.list)
+
+    # compare words to the dictionaries of positive & negative terms
+      pos.matches = match(words, pos.words)
+      neg.matches = match(words, neg.words)
+
+      # get the position of the matched term or NA
+      # we just want a TRUE/FALSE
+      pos.matches = !is.na(pos.matches)
+      neg.matches = !is.na(neg.matches)
+
+      # final score
+      score = sum(pos.matches) - sum(neg.matches)
+      return(score)
+    }, pos.words, neg.words)
+# data frame with scores for each sentence
+   scores.df = data.frame(text=sentences, score=scores)
+   return(scores.df)
+}
+
+# import positive and negative words
+pos.words = scan('positive-words.txt', what='character', comment.char=';')
+neg.words = scan('negative-words.txt', what='character', comment.char=';')
+```
+
+```{r tweeterSetup, include=FALSE}
+load("key.Rdata")
+twitteR::use_oauth_token(token)
+
+# harvest some tweets
+#twTerm <- "makerspace"
+#tweets <- searchTwitter(twTerm, n=10000, lang="en")
+
+#twUser <- "dalepd"
+#tweets <- userTimeline(twUser, n=1000)
+#class(tweets)
+
+# get the text
+#tweets_txt <- sapply(tweets, function(x) x$getText())
+#write.csv(tweets_txt, "Tweets.txt")
+#write.csv(tweets_txt, "Tweets.csv")
+#text <- tweets_txt
+```
+
+```{r textSetup, include=FALSE}
+#data <- c('SCdata.txt', 'MKdata.txt')
+#text <- lapply(unlist(lapply(data, readLines)), readLines)
+```
+
+```{r corpusText, include=FALSE}
+# 1. Creating corpus
+myCorpus <- Corpus(VectorSource(text))
+
+# 2. Cleaning corpus
+myCorpus <- cleanCorpus(myCorpus)
+
+# 3. corpus Stemming
+myCorpusCopy <- myCorpus
+myCorpus <- tm_map(myCorpus, stemDocument)
+myCorpus <- lapply(myCorpus, stemCompletion2, dict=myCorpusCopy)
+myCorpus <- Corpus(VectorSource(myCorpus))
+
+# 4. Cleaning corpus again
+myCorpus <- cleanCorpus(myCorpus)
+myCorpus <- tm_map(myCorpus, replaceLS)
+```
+
+```{r corpusTW, include=FALSE}
+# 1. Creating corpus
+myCorpusTW <- Corpus(VectorSource(tweets_txt))
+
+# 2. Cleaning corpus
+myCorpusTW <- cleanCorpus(myCorpusTW)
+
+# 3. corpus Stemming
+myCorpusCopyTW <- myCorpusTW
+myCorpusTW <- tm_map(myCorpusTW, stemDocument)
+myCorpusTW <- lapply(myCorpusTW, stemCompletion2, dict=myCorpusCopyTW)
+myCorpusTW <- Corpus(VectorSource(myCorpusTW))
+
+# 4. Cleaning corpus again
+myCorpusTW <- cleanCorpus(myCorpusTW)
+myCorpusTW <- tm_map(myCorpusTW, replaceLS)
+```
